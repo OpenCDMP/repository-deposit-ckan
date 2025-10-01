@@ -1,0 +1,28 @@
+ckan:
+  licenseReferenceCode: ${DEPOSIT_CKAN_LICENCES_CODE:licenses}
+  organizationReferenceCode: ${DEPOSIT_CKAN_ORGANIZATIONS_CODE:organisations}
+  maxInMemorySizeInBytes: 6554000
+  depositConfiguration:
+    deposit-type: 2
+    repository-id: ckan
+    access-token: ${DEPOSIT_CKAN_ACCESS_TOKEN}
+    repository-url: ${DEPOSIT_CKAN_URL}
+    repository-authorization-url:
+    repository-record-url: ${DEPOSIT_CKAN_RECORD_URL}
+    repository-client-id:
+    repository-client-secret:
+    redirect-uri:
+    has-logo: ${DEPOSIT_CKAN_HAS_LOGO:true}
+    useSharedStorage: ${DEPOSIT_CKAN_USE_SHARED_STORAGE:false}
+    configuration-fields:
+    user-configuration-fields:
+      - code: ckan-access-token
+        type: 0
+        label: Access Token
+        authInfo: true
+    auth-methods:
+      - PluginDefault
+      - AuthInfoFromUserProfile
+  organization: ${DEPOSIT_CKAN_ORGANIZATION_ID}
+  domain: ${OPENCDMP_DOMAIN}
+  logo: ${DEPOSIT_CKAN_LOGO_PATH:classpath:ckan.png}

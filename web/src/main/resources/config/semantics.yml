@@ -1,0 +1,20 @@
+semantics:
+  relationships-as-object:
+    - ckan.dataset.relationships_as_object.depends_on
+    - ckan.dataset.relationships_as_object.dependency_of
+    - ckan.dataset.relationships_as_object.derives_from
+    - ckan.dataset.relationships_as_object.has_derivation
+    - ckan.dataset.relationships_as_object.links_to
+    - ckan.dataset.relationships_as_object.linked_from
+    - ckan.dataset.relationships_as_object.child_of
+    - ckan.dataset.relationships_as_object.parent_of
+  relationships-as-subject:
+    - ckan.dataset.relationships_as_subject.depends_on
+    - ckan.dataset.relationships_as_subject.dependency_of
+    - ckan.dataset.relationships_as_subject.derives_from
+    - ckan.dataset.relationships_as_subject.has_derivation
+    - ckan.dataset.relationships_as_subject.links_to
+    - ckan.dataset.relationships_as_subject.linked_from
+    - ckan.dataset.relationships_as_subject.child_of
+    - ckan.dataset.relationships_as_subject.parent_of
+
