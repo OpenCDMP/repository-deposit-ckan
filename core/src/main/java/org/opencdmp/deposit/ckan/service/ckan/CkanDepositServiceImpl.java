@@ -1,8 +1,5 @@
 package org.opencdmp.deposit.ckan.service.ckan;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import gr.cite.tools.logging.LoggerService;
 import gr.cite.tools.logging.MapLogEntry;
 import org.json.JSONObject;
@@ -28,6 +25,9 @@ import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 import java.io.*;
 import java.util.*;
@@ -58,7 +58,7 @@ public class CkanDepositServiceImpl implements CkanDepositService {
     }
 
     @Override
-    public String deposit(PlanDepositModel planDepositModel) throws Exception {
+    public String deposit(PlanDepositModel planDepositModel) {
 
         DepositConfiguration depositConfiguration = this.getConfiguration();
 
@@ -87,7 +87,11 @@ public class CkanDepositServiceImpl implements CkanDepositService {
             } catch (HttpClientErrorException | HttpServerErrorException ex) {
                 logger.error(ex.getMessage(), ex);
                 Map<String, String> parsedException = objectMapper.readValue(ex.getResponseBodyAsString(), Map.class);
-                throw new IOException(parsedException.get("message"), ex);
+                try {
+                    throw new IOException(parsedException.get("message"), ex);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
             }
 
         }
@@ -97,7 +101,7 @@ public class CkanDepositServiceImpl implements CkanDepositService {
     }
 
 
-    private String depositFirst(PlanModel planModel, String token) throws IOException {
+    private String depositFirst(PlanModel planModel, String token)  {
         CkanDataset dataset = this.ckanBuilder.build(planModel);
 
         String url = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl() + "package_create";
@@ -118,7 +122,7 @@ public class CkanDepositServiceImpl implements CkanDepositService {
         return String.valueOf(response.get("name"));
     }
 
-    private void uploadFiles(PlanModel planModel, String id, String token) throws IOException {
+    private void uploadFiles(PlanModel planModel, String id, String token) {
         if (planModel.getPdfFile() != null) this.uploadFile(planModel.getPdfFile(), id, token);
         if (planModel.getRdaJsonFile() != null) this.uploadFile(planModel.getRdaJsonFile(), id, token);
         if (planModel.getSupportingFilesZip() != null) this.uploadFile(planModel.getSupportingFilesZip(), id, token);
@@ -152,7 +156,7 @@ public class CkanDepositServiceImpl implements CkanDepositService {
                                 mono.bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})).block();
     }
 
-    private void sendRelationshipFromSemantics(PlanModel planModel, String datasetId, String token) throws JsonProcessingException {
+    private void sendRelationshipFromSemantics(PlanModel planModel, String datasetId, String token) throws JacksonException {
         List<DatasetRelationship> relationships = ckanBuilder.buildDatasetRelationshipBySemantics(planModel, datasetId);
 
         for (DatasetRelationship relationship: relationships) {
@@ -174,7 +178,7 @@ public class CkanDepositServiceImpl implements CkanDepositService {
         }
     }
 
-    private String depositNewVersion(PlanModel planModel, String token) throws IOException {
+    private String depositNewVersion(PlanModel planModel, String token) {
         JsonNode oldDatasetJson = this.getDatasetIdentifier(planModel.getPreviousDOI()).get(0);
         String oldDatasetId = oldDatasetJson.get("id").asText();
         String oldVersion = oldDatasetJson.get("version").asText();
@@ -190,7 +194,7 @@ public class CkanDepositServiceImpl implements CkanDepositService {
         return null;
     }
 
-    private JsonNode getDatasetIdentifier(String previousDOI) throws JsonProcessingException {
+    private JsonNode getDatasetIdentifier(String previousDOI) throws JacksonException {
         String url = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl() + "package_search?q=name:" + previousDOI + "&include_private=True";
 
         Map<String, Object> response = this.getWebClient().get().uri(url).retrieve().toEntity(Map.class).block().getBody();
@@ -252,8 +256,8 @@ public class CkanDepositServiceImpl implements CkanDepositService {
 
     @Override
     public String getLogo() {
-        DepositConfiguration ckanConfig = this.ckanServiceProperties.getDepositConfiguration();
-        if(ckanConfig != null && ckanConfig.isHasLogo() && this.ckanServiceProperties.getLogo() != null && !this.ckanServiceProperties.getLogo().isBlank()) {
+        DepositConfiguration zenodoConfig = this.ckanServiceProperties.getDepositConfiguration();
+        if(zenodoConfig != null && zenodoConfig.isHasLogo() && this.ckanServiceProperties.getLogo() != null && !this.ckanServiceProperties.getLogo().isBlank()) {
             if (this.logo == null) {
                 try {
                     Resource resource = resourceLoader.getResource(this.ckanServiceProperties.getLogo());

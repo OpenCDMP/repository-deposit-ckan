@@ -11,6 +11,8 @@ This service integrates with the OpenCDMP platform to provide deposit functional
 - ✅ Automatic DOI minting
 - ✅ System-based and user-based depositions
 
+**Supported CKAN version:** 2.11.4
+
 ---
 
 ## Quick start
