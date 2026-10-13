@@ -4,24 +4,33 @@ import gr.cite.tools.logging.LoggerService;
 import gr.cite.tools.logging.MapLogEntry;
 import org.json.JSONObject;
 import org.opencdmp.commonmodels.models.FileEnvelopeModel;
+import org.opencdmp.commonmodels.models.deposit.DepositPreviewModel;
+import org.opencdmp.commonmodels.models.deposit.PreviewFieldOption;
 import org.opencdmp.commonmodels.models.plan.PlanModel;
 import org.opencdmp.commonmodels.models.plugin.PluginUserFieldModel;
+import org.opencdmp.deposit.ckan.configuration.CkanSemanticsManifest;
+import org.opencdmp.deposit.ckan.configuration.SemanticsProperties;
 import org.opencdmp.deposit.ckan.model.CkanDataset;
-import org.opencdmp.deposit.ckan.model.CkanUploadData;
 import org.opencdmp.deposit.ckan.model.DatasetRelationship;
 import org.opencdmp.deposit.ckan.model.builder.CkanBuilder;
+import org.opencdmp.deposit.ckan.model.builder.CkanPreviewMapper;
 import org.opencdmp.deposit.ckan.service.storage.FileStorageService;
 import org.opencdmp.depositbase.repository.DepositConfiguration;
+import org.opencdmp.depositbase.repository.DepositPreviewMergeHelper;
+import org.opencdmp.depositbase.repository.DepositPluginSettings;
 import org.opencdmp.depositbase.repository.PlanDepositModel;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.http.*;
+import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
@@ -37,24 +46,85 @@ public class CkanDepositServiceImpl implements CkanDepositService {
     private static final LoggerService logger = new LoggerService(LoggerFactory.getLogger(CkanDepositServiceImpl.class));
 
     private static final String CONFIGURATION_FIELD_ACCESS_TOKEN = "ckan-access-token";
+    private static final String SETTING_ORGANISATION_ACCESS_TOKEN = "organisation-access-token";
     private static final String DERIVES_FROM = "derives_from";
 
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     private final CkanServiceProperties ckanServiceProperties;
     private final CkanBuilder ckanBuilder;
+    private final CkanPreviewMapper ckanPreviewMapper;
     private final FileStorageService storageService;
     private final ResourceLoader resourceLoader;
 
     private byte[] logo;;
     
     @Autowired
-    public CkanDepositServiceImpl(CkanServiceProperties ckanServiceProperties, CkanBuilder mapper, FileStorageService storageService, ResourceLoader resourceLoader){
+    public CkanDepositServiceImpl(CkanServiceProperties ckanServiceProperties, CkanBuilder mapper, FileStorageService storageService, ResourceLoader resourceLoader, SemanticsProperties semanticsProperties, LocalCustomFieldProperties customFieldProperties, CkanPreviewMapper ckanPreviewMapper){
         this.ckanServiceProperties = ckanServiceProperties;
         this.ckanBuilder = mapper;
 	    this.storageService = storageService;
         this.resourceLoader = resourceLoader;
+        this.ckanPreviewMapper = ckanPreviewMapper;
+        this.ckanServiceProperties.getDepositConfiguration().setSemantics(CkanSemanticsManifest.build(semanticsProperties, customFieldProperties));
         this.logo = null;
+    }
+
+    @Override
+    public DepositPreviewModel preview(PlanDepositModel planDepositModel) {
+        if (planDepositModel == null || planDepositModel.getPlanModel() == null) return null;
+
+        CkanDataset dataset = this.ckanBuilder.build(planDepositModel.getPlanModel());
+        List<String> uploadFileNames = new ArrayList<>();
+        PlanModel planModel = planDepositModel.getPlanModel();
+        if (planModel.getPdfFile() != null && planModel.getPdfFile().getFilename() != null) uploadFileNames.add(planModel.getPdfFile().getFilename());
+        if (planModel.getRdaJsonFile() != null && planModel.getRdaJsonFile().getFilename() != null) uploadFileNames.add(planModel.getRdaJsonFile().getFilename());
+        if (planModel.getSupportingFilesZip() != null && planModel.getSupportingFilesZip().getFilename() != null) uploadFileNames.add(planModel.getSupportingFilesZip().getFilename());
+        DepositPreviewModel preview = this.ckanPreviewMapper.toPreview(dataset, uploadFileNames, DepositPluginSettings.of(planDepositModel, this.getConfiguration()));
+        DepositPreviewMergeHelper.merge(preview, planDepositModel.getStoredFields(), planDepositModel.getStoredGroups());
+        return preview;
+    }
+
+    @Override
+    public List<PreviewFieldOption> searchVocabulary(String fieldCode, String like) {
+        String result = switch (fieldCode) {
+            case CkanPreviewMapper.FIELD_LICENSE -> "license_list";
+            case CkanPreviewMapper.FIELD_OWNER_ORG -> "organization_list";
+            default -> null;
+        };
+        if (result == null) return List.of();
+
+        try {
+            String url = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl() + result;
+            Map<String, Object> response = this.getWebClient().get().uri(url).retrieve().toEntity(Map.class).block().getBody();
+            if (response == null) return List.of();
+
+            List<PreviewFieldOption> options = new ArrayList<>();
+            String term = like != null ? like.trim().toLowerCase(Locale.ROOT) : "";
+            if (CkanPreviewMapper.FIELD_LICENSE.equals(fieldCode)) {
+                List<Map<String, Object>> licenses = (List<Map<String, Object>>) response.get("result");
+                if (licenses == null) return List.of();
+                for (Map<String, Object> license : licenses) {
+                    String id = license.get("id") != null ? license.get("id").toString() : null;
+                    if (id == null || id.isBlank()) continue;
+                    String title = license.get("title") != null ? license.get("title").toString() : id;
+                    if (!term.isEmpty() && !title.toLowerCase(Locale.ROOT).contains(term) && !id.toLowerCase(Locale.ROOT).contains(term)) continue;
+                    options.add(new PreviewFieldOption(title, id));
+                }
+            } else {
+                List<String> organizations = (List<String>) response.get("result");
+                if (organizations == null) return List.of();
+                for (String organization : organizations) {
+                    if (organization == null || organization.isBlank()) continue;
+                    if (!term.isEmpty() && !organization.toLowerCase(Locale.ROOT).contains(term)) continue;
+                    options.add(new PreviewFieldOption(organization, organization));
+                }
+            }
+            return options;
+        } catch (Exception e) {
+            logger.error("vocabulary search failed for " + fieldCode + ": " + e.getMessage(), e);
+            return List.of();
+        }
     }
 
     @Override
@@ -73,15 +143,15 @@ public class CkanDepositServiceImpl implements CkanDepositService {
                 }
             }
 
-            if (token == null || token.isBlank()) token = this.ckanServiceProperties.getDepositConfiguration().getAccessToken();
+            if (token == null || token.isBlank()) token = DepositPluginSettings.of(planDepositModel.getPlanModel(), depositConfiguration).text(SETTING_ORGANISATION_ACCESS_TOKEN, this.ckanServiceProperties.getDepositConfiguration().getAccessToken());
             String previousDOI = planDepositModel.getPlanModel().getPreviousDOI();
 
             try {
 
                 if (previousDOI == null) {
-                    return depositFirst(planDepositModel.getPlanModel(), token);
+                    return depositFirst(planDepositModel, token);
                 } else {
-                    return depositNewVersion(planDepositModel.getPlanModel(), token);
+                    return depositNewVersion(planDepositModel, token);
                 }
 
             } catch (HttpClientErrorException | HttpServerErrorException ex) {
@@ -101,8 +171,10 @@ public class CkanDepositServiceImpl implements CkanDepositService {
     }
 
 
-    private String depositFirst(PlanModel planModel, String token)  {
+    private String depositFirst(PlanDepositModel planDepositModel, String token)  {
+        PlanModel planModel = planDepositModel.getPlanModel();
         CkanDataset dataset = this.ckanBuilder.build(planModel);
+        this.ckanPreviewMapper.applyOverrides(dataset, planDepositModel.getEditedFields(), planDepositModel.getEditedGroups(), DepositPluginSettings.of(planDepositModel, this.getConfiguration()));
 
         String url = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl() + "package_create";
 
@@ -142,18 +214,30 @@ public class CkanDepositServiceImpl implements CkanDepositService {
 
         String url = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl() + "resource_create";
 
-        CkanUploadData data = new CkanUploadData();
-        data.setDatasetId(datasetId);
-        data.setName(fileEnvelopeModel.getFilename());
+        MultipartBodyBuilder builder = new MultipartBodyBuilder();
+
+        builder.part("package_id", datasetId);
+        builder.part("name", fileEnvelopeModel.getFilename());
+
+        builder.part(
+                "upload",
+                new ByteArrayResource(fileBytes) {
+                    @Override
+                    public String getFilename() {
+                        return fileEnvelopeModel.getFilename();
+                    }
+                }
+        );
 
         this.getWebClient().post().uri(url).headers(httpHeaders -> {
                     httpHeaders.set("Authorization", token);
                     httpHeaders.setContentType(MediaType.APPLICATION_JSON);
                 })
-                .bodyValue(data).exchangeToMono(mono ->
-                        mono.statusCode().isError() ?
-                                mono.createException().flatMap(Mono::error) :
-                                mono.bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})).block();
+                .contentType(MediaType.MULTIPART_FORM_DATA)
+                .body(BodyInserters.fromMultipartData(builder.build()))
+                .retrieve()
+                .bodyToMono(String.class)
+                .block();
     }
 
     private void sendRelationshipFromSemantics(PlanModel planModel, String datasetId, String token) throws JacksonException {
@@ -178,12 +262,13 @@ public class CkanDepositServiceImpl implements CkanDepositService {
         }
     }
 
-    private String depositNewVersion(PlanModel planModel, String token) {
-        JsonNode oldDatasetJson = this.getDatasetIdentifier(planModel.getPreviousDOI()).get(0);
+    private String depositNewVersion(PlanDepositModel planDepositModel, String token) {
+        PlanModel planModel = planDepositModel.getPlanModel();
+        JsonNode oldDatasetJson = this.getDatasetIdentifier(planModel.getPreviousDOI(), token).get(0);
         String oldDatasetId = oldDatasetJson.get("id").asText();
-        String oldVersion = oldDatasetJson.get("version").asText();
+        String oldVersion = oldDatasetJson.hasNonNull("version") ? oldDatasetJson.get("version").asText() : null;
 
-        Map<String, Object> newDataset = this.updateVersion(planModel, oldVersion, token);
+        Map<String, Object> newDataset = this.updateVersion(planDepositModel, oldVersion, token);
 
         if (newDataset != null && newDataset.get("id") != null) {
             this.uploadFiles(planModel, newDataset.get("id").toString(), token);
@@ -194,20 +279,27 @@ public class CkanDepositServiceImpl implements CkanDepositService {
         return null;
     }
 
-    private JsonNode getDatasetIdentifier(String previousDOI) throws JacksonException {
+    private JsonNode getDatasetIdentifier(String previousDOI, String token) throws JacksonException {
         String url = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl() + "package_search?q=name:" + previousDOI + "&include_private=True";
 
-        Map<String, Object> response = this.getWebClient().get().uri(url).retrieve().toEntity(Map.class).block().getBody();
+        Map<String, Object> response = this.getWebClient().get().uri(url).headers(httpHeaders -> {
+            httpHeaders.set("Authorization", token);
+            httpHeaders.setContentType(MediaType.APPLICATION_JSON);
+        }).retrieve().toEntity(Map.class).block().getBody();
+
         if (response == null) return null;
 
         JsonNode jsonNode = objectMapper.readTree(new JSONObject(response).toString()).get("result");
         return jsonNode.findValues("results").getFirst();
     }
 
-    private Map<String, Object> updateVersion(PlanModel planModel, String version, String token){
+    private Map<String, Object> updateVersion(PlanDepositModel planDepositModel, String version, String token){
 
+        PlanModel planModel = planDepositModel.getPlanModel();
         CkanDataset dataset = this.ckanBuilder.build(planModel);
-        dataset.setVersion(String.valueOf(Integer.parseInt(version) + 1));
+        this.ckanPreviewMapper.applyOverrides(dataset, planDepositModel.getEditedFields(), planDepositModel.getEditedGroups(), DepositPluginSettings.of(planDepositModel, this.getConfiguration()));
+        // the version is system-managed for new-version deposits (auto-incremented), never user-editable here
+        dataset.setVersion(this.nextVersion(version, planModel));
 
         String url = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl() + "package_create";
 
@@ -221,6 +313,16 @@ public class CkanDepositServiceImpl implements CkanDepositService {
                                 mono.bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})).block();
         if (response == null) return null;
         return (Map<String, Object>) response.get("result");
+    }
+
+    private String nextVersion(String version, PlanModel planModel) {
+        try {
+            return String.valueOf(Integer.parseInt(version.trim()) + 1);
+        } catch (RuntimeException e) {
+            // the previous record's version was not a number (e.g. edited in the review): use the plan's
+            logger.warn("Previous CKAN version is not numeric: " + version);
+            return String.valueOf(planModel.getVersion());
+        }
     }
 
     private void createNewVersionRelationship(String oldDatasetId, String newDatasetId, String token){

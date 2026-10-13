@@ -1,10 +1,13 @@
 package org.opencdmp.deposit.ckan.model;
 
+import com.fasterxml.jackson.annotation.JsonAnyGetter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -46,6 +49,11 @@ public class CkanDataset {
     private List<CkanTag> tags;
 
     private List<CkanExtra> extras;
+
+    private List<CkanGroup> groups;
+
+    // custom CKAN schema fields
+    private Map<String, Object> customFields = new LinkedHashMap<>();
 
     public String getId() {
         return id;
@@ -168,5 +176,27 @@ public class CkanDataset {
 
     public void setExtras(List<CkanExtra> extras) {
         this.extras = extras;
+    }
+
+    public List<CkanGroup> getGroups() {
+        return groups;
+    }
+
+    public void setGroups(List<CkanGroup> groups) {
+        this.groups = groups;
+    }
+
+    @JsonAnyGetter
+    public Map<String, Object> getCustomFields() {
+        return customFields;
+    }
+
+    public void setCustomFields(Map<String, Object> customFields) {
+        this.customFields = customFields;
+    }
+
+    public void addCustomField(String code, Object value) {
+        if (this.customFields == null) this.customFields = new LinkedHashMap<>();
+        this.customFields.put(code, value);
     }
 }

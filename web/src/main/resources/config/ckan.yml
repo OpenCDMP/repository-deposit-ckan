@@ -14,7 +14,162 @@ ckan:
     redirect-uri:
     has-logo: ${DEPOSIT_CKAN_HAS_LOGO:true}
     useSharedStorage: ${DEPOSIT_CKAN_USE_SHARED_STORAGE:false}
+    supports-preview: ${DEPOSIT_CKAN_SUPPORTS_PREVIEW:true}
+    uploaded-files:
+      - PlanDocument
+      - RdaJson
+      - SupportingFiles
     configuration-fields:
+      - code: publish-ways
+        type: 3
+        label: "Ways to publish"
+        group: "Who publishes"
+        description: "Which accounts users can publish under."
+        defaultValue: "both"
+        options:
+          - label: "The organisation's account and users' own accounts"
+            value: "both"
+          - label: "Only the organisation's account"
+            value: "organisation"
+          - label: "Only users' own accounts"
+            value: "own"
+      - code: publish-preselected
+        type: 3
+        label: "Preselected"
+        group: "Who publishes"
+        description: "The choice users see selected when both are allowed. Users with saved credentials always start on their own account."
+        defaultValue: "own"
+        options:
+          - label: "Users' own accounts"
+            value: "own"
+          - label: "The organisation's account"
+            value: "organisation"
+      - code: organisation-account-name
+        type: 0
+        label: "Organisation account name"
+        group: "Who publishes"
+        description: "What users see in “Publish as”. Empty: “The organisation's CKAN account”."
+      - code: organisation-access-token
+        type: 0
+        label: "Access token"
+        group: "Organisation account"
+        description: "The API token of the CKAN account to publish under. Empty: the installation's account is used."
+        authInfo: true
+      - code: organisation
+        type: 0
+        label: "Organisation"
+        group: "CKAN record"
+        description: "The id or name of the CKAN organisation that owns records whose plan names no organisation CKAN knows. Empty: the installation's value."
+      - code: visibility
+        type: 3
+        label: "Visibility"
+        group: "CKAN record"
+        description: "Whether records are private to the organisation or public in CKAN."
+        defaultValue: "plan"
+        options:
+          - label: "As the plan: private when the plan is restricted"
+            value: "plan"
+          - label: "Always private"
+            value: "private"
+          - label: "Always public"
+            value: "public"
+      - code: licence
+        type: 0
+        label: "Licence"
+        group: "CKAN record"
+        description: "The id of a CKAN licence, such as cc-by, for records whose plan names no licence CKAN knows."
+      - code: tags
+        type: 7
+        label: "Tags"
+        group: "CKAN record"
+        description: "Tags added to every record, besides the plan's own. Tags hold only letters, digits, spaces and . _ -; others are left out."
+      - code: groups
+        type: 7
+        label: "Groups"
+        group: "CKAN record"
+        description: "The names of the CKAN groups every record joins. The publishing account must be allowed to add datasets to them."
+      - code: dataset-type
+        type: 0
+        label: "Dataset type"
+        group: "CKAN record"
+        description: "The CKAN dataset type of the records, for instances with custom schemas. Empty: CKAN's default type."
+      - code: maintainer
+        type: 0
+        label: "Maintainer"
+        group: "CKAN record"
+        description: "The maintainer of records whose plan has no contacts."
+      - code: maintainer-email
+        type: 0
+        label: "Maintainer email"
+        group: "CKAN record"
+        description: "The maintainer's email for records whose plan has no contacts."
+      - code: link-public-plan
+        type: 3
+        label: "Link the public plan page"
+        group: "CKAN record"
+        description: "Adds the plan's public OpenCDMP page to the record when the plan is public."
+        defaultValue: "true"
+        options:
+          - label: "Yes"
+            value: "true"
+          - label: "No"
+            value: "false"
+      - code: deposit-files
+        type: 7
+        label: "Files to deposit"
+        group: "Files"
+        description: "Which files are uploaded with the record. Empty: all of them."
+        options:
+          - label: "Plan document"
+            value: "PlanDocument"
+          - label: "Machine-actionable plan (RDA JSON)"
+            value: "RdaJson"
+          - label: "Supporting files"
+            value: "SupportingFiles"
+      - code: reference-type-organisations
+        type: 0
+        label: "Organisations"
+        group: "Reference types"
+        description: "The code of the reference type whose plan references name the CKAN organisation. Empty: the installation's value."
+      - code: reference-type-licences
+        type: 0
+        label: "Licences"
+        group: "Reference types"
+        description: "The code of the reference type whose plan references name the CKAN licence. Empty: the installation's value."
+      - code: review-hidden-sections
+        type: 7
+        label: "Hidden sections"
+        group: "Review"
+        description: "Sections users never see in the review. Values your plans map into them are still published."
+        options:
+          - label: "Basic information"
+            value: "basic-information"
+          - label: "License and access"
+            value: "access"
+          - label: "Author and maintainer"
+            value: "people"
+          - label: "Creators"
+            value: "creators"
+          - label: "Extra fields"
+            value: "extras"
+          - label: "Domain specific fields"
+            value: "domain-specific"
+      - code: review-locked
+        type: 7
+        label: "Values users can't change"
+        group: "Review"
+        description: "These settings show in the review as set by the organisation, and users' edits to them are ignored."
+        options:
+          - label: "Organisation"
+            value: "organisation"
+          - label: "Visibility"
+            value: "visibility"
+          - label: "Licence"
+            value: "licence"
+          - label: "Maintainer"
+            value: "maintainer"
+          - label: "Maintainer email"
+            value: "maintainer-email"
     user-configuration-fields:
       - code: ckan-access-token
         type: 0
