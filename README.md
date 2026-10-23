@@ -72,6 +72,12 @@ For each deposit, the service uses the first of these CKAN tokens that is set:
 
 OpenCDMP decides which accounts a user may publish under, and never falls back to the organisation's or the installation's account when a user chose their own. See [Publishing accounts and files](https://opencdmp.github.io/optional-services/deposit-services/#publishing-accounts-and-files).
 
+### The account a deposit used
+
+After a deposit under a user's own account, OpenCDMP calls `POST /api/deposit/account` with the same credentials, and the service reads the token's CKAN user from `GET <DEPOSIT_CKAN_URL>user_show` without an `id`, which CKAN 2.10 and later answer with the token's own user. It returns the user's id and a name to show: the full name, otherwise the username, with the email when CKAN returns one. OpenCDMP keeps them with the dataset's name and names that account when a later version is published, since an account that cannot see or edit the earlier dataset may be refused. It never asks for the organisation's account, so that account's CKAN identity is not stored or shown to users.
+
+The service returns nothing when CKAN does not answer, and the deposit is not affected; OpenCDMP then shows its generic message.
+
 ### Custom dataset fields
 
 A CKAN instance with its own dataset schema can receive extra fields. Declare them in `custom-fields`, for example in `/config/custom-fields-<PROFILE>.yml`:
@@ -99,6 +105,7 @@ All endpoints are under `/api/deposit`. They accept only a Bearer token from the
 | `POST /api/deposit` | Deposit a plan and return the dataset's name |
 | `POST /api/deposit/preview` | Return the metadata that would be deposited, as an editable form |
 | `GET /api/deposit/vocab/{fieldCode}?like=` | Search the vocabulary behind a review field |
+| `POST /api/deposit/account` | Return the CKAN account that a deposit's credentials belong to (see [The account a deposit used](#the-account-a-deposit-used)) |
 | `GET /api/deposit/configuration` | Return the service's `DepositConfiguration` |
 | `GET /api/deposit/logo` | Return the CKAN logo, Base64-encoded |
 

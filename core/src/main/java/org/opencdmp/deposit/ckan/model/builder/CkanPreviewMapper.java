@@ -1,5 +1,7 @@
 package org.opencdmp.deposit.ckan.model.builder;
 
+import gr.cite.tools.logging.LoggerService;
+import gr.cite.tools.logging.MapLogEntry;
 import org.opencdmp.commonmodels.enums.PreviewFieldSource;
 import org.opencdmp.commonmodels.enums.PreviewFieldType;
 import org.opencdmp.commonmodels.models.deposit.DepositPreviewModel;
@@ -13,15 +15,16 @@ import org.opencdmp.deposit.ckan.configuration.preview.PreviewExtraFieldsPropert
 import org.opencdmp.deposit.ckan.model.CkanDataset;
 import org.opencdmp.deposit.ckan.model.CkanExtra;
 import org.opencdmp.deposit.ckan.model.CkanTag;
+import org.opencdmp.deposit.ckan.service.ckan.CkanDepositServiceImpl;
+import org.opencdmp.deposit.ckan.service.ckan.CkanServiceProperties;
 import org.opencdmp.depositbase.repository.DepositPluginSettings;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.TreeMap;
-import java.util.TreeSet;
+import java.util.*;
 
 /**
  * Maps a built {@link CkanDataset} to a deposit preview descriptor and applies
@@ -31,11 +34,14 @@ import java.util.TreeSet;
  */
 @Component
 public class CkanPreviewMapper {
+    private static final LoggerService logger = new LoggerService(LoggerFactory.getLogger(CkanPreviewMapper.class));
 
     private final PreviewExtraFieldsProperties previewExtraFieldsProperties;
+    private final CkanServiceProperties ckanServiceProperties;
 
-    public CkanPreviewMapper(PreviewExtraFieldsProperties previewExtraFieldsProperties) {
+    public CkanPreviewMapper(PreviewExtraFieldsProperties previewExtraFieldsProperties, CkanServiceProperties ckanServiceProperties) {
         this.previewExtraFieldsProperties = previewExtraFieldsProperties;
+        this.ckanServiceProperties = ckanServiceProperties;
     }
 
     public static final String FIELD_TITLE = "title";
@@ -90,7 +96,8 @@ public class CkanPreviewMapper {
         groups.add(this.buildPeopleGroup(dataset));
         if (this.hasIndexedCreatorFieldsConfigured()) groups.add(this.buildCreatorsGroup(dataset));
         groups.add(this.buildExtrasGroup(dataset));
-        if (this.previewExtraFieldsProperties.getFields() != null && !this.previewExtraFieldsProperties.getFields().isEmpty()) groups.add(this.buildDomainSpecificGroup(dataset));
+        if (this.previewExtraFieldsProperties.getFields() != null && !this.previewExtraFieldsProperties.getFields().isEmpty())
+            groups.add(this.buildDomainSpecificGroup(dataset));
         groups.removeIf(group -> settings.isHidden(group.getCode()));
         for (PreviewFieldGroup group : groups) {
             for (PreviewField field : group.getFields()) {
@@ -125,18 +132,110 @@ public class CkanPreviewMapper {
         return group;
     }
 
+    /** CKAN's choices for a vocabulary field, labelled for display and valued with what CKAN expects (e.g. a license's title and id). */
+    public List<PreviewFieldOption> searchVocabulary(String fieldCode, String like) {
+        String result = switch (fieldCode) {
+            case FIELD_LICENSE -> "license_list";
+            case FIELD_OWNER_ORG -> "organization_list";
+            default -> null;
+        };
+        if (result == null) return List.of();
+
+        try {
+            String url = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl() + result;
+            Map<String, Object> response = this.getWebClient().get().uri(url).retrieve().toEntity(Map.class).block().getBody();
+            if (response == null) return List.of();
+
+            List<PreviewFieldOption> options = new ArrayList<>();
+            String term = like != null ? like.trim().toLowerCase(Locale.ROOT) : "";
+            if (FIELD_LICENSE.equals(fieldCode)) {
+                List<Map<String, Object>> licenses = (List<Map<String, Object>>) response.get("result");
+                if (licenses == null) return List.of();
+                for (Map<String, Object> license : licenses) {
+                    String id = license.get("id") != null ? license.get("id").toString() : null;
+                    if (id == null || id.isBlank()) continue;
+                    String title = license.get("title") != null ? license.get("title").toString() : id;
+                    if (!term.isEmpty() && !title.toLowerCase(Locale.ROOT).contains(term) && !id.toLowerCase(Locale.ROOT).contains(term)) continue;
+                    options.add(new PreviewFieldOption(title, id));
+                }
+            } else {
+                List<String> organizations = (List<String>) response.get("result");
+                if (organizations == null) return List.of();
+                for (String organization : organizations) {
+                    if (organization == null || organization.isBlank()) continue;
+                    if (!term.isEmpty() && !organization.toLowerCase(Locale.ROOT).contains(term)) continue;
+                    options.add(new PreviewFieldOption(organization, organization));
+                }
+            }
+            return options;
+        } catch (Exception e) {
+            logger.error("vocabulary search failed for " + fieldCode + ": " + e.getMessage(), e);
+            return List.of();
+        }
+    }
+
+    /**
+     * Gives a vocabulary select CKAN's choices as its options, so the review shows the label of the
+     * value built from the plan while the value itself stays what CKAN expects (a license's id).
+     * A plan value CKAN does not list is dropped rather than offered.
+     */
+    private void applyVocabularyOptions(PreviewField field) {
+        List<PreviewFieldOption> options = this.searchVocabulary(field.getCode(), null);
+        String value = field.getValue() != null ? field.getValue().getTextValue() : null;
+        if (value != null && options.stream().noneMatch(option -> value.equals(option.getValue()))) {
+            field.setValue(this.textValue(field.getCode(), null));
+            field.setBaseValue(this.textValue(field.getCode(), null));
+        }
+        field.setOptions(options);
+        field.setVocabSearch(true);
+    }
+
+
+    public WebClient getWebClient(){
+        return WebClient.builder().filters(exchangeFilterFunctions -> {
+            exchangeFilterFunctions.add(logRequest());
+            exchangeFilterFunctions.add(logResponse());
+        }).codecs(codecs -> codecs
+                .defaultCodecs()
+                .maxInMemorySize(this.ckanServiceProperties.getMaxInMemorySizeInBytes())
+        ).build();
+    }
+
+    private static ExchangeFilterFunction logRequest() {
+        return ExchangeFilterFunction.ofRequestProcessor(clientRequest -> {
+            logger.debug(new MapLogEntry("Request").And("method", clientRequest.method().toString()).And("url", clientRequest.url().toString()));
+            return Mono.just(clientRequest);
+        });
+    }
+
+    private static ExchangeFilterFunction logResponse() {
+        return ExchangeFilterFunction.ofResponseProcessor(response -> {
+            if (response.statusCode().isError()) {
+                // reading the body consumes it, so the response passed on gets it back for the caller to read CKAN's error
+                return response.bodyToMono(String.class).defaultIfEmpty("")
+                        .map(body -> {
+                            logger.error(new MapLogEntry("Response").And("method", response.request().getMethod().toString()).And("url", response.request().getURI()).And("status", response.statusCode().toString()).And("body", body));
+                            return response.mutate().body(body).build();
+                        });
+            }
+            return Mono.just(response);
+
+        });
+    }
+
+
+
     private PreviewFieldGroup buildAccessGroup(CkanDataset dataset) {
         PreviewFieldGroup group = this.buildGroup("access", "License and access");
         List<PreviewField> fields = group.getFields();
-
         PreviewField license = this.buildField(FIELD_LICENSE, "License", PreviewFieldType.Select, PreviewFieldSource.Mapped, false,
                 () -> this.textValue(FIELD_LICENSE, dataset.getLicenseId()));
-        license.setVocabSearch(true);
+        this.applyVocabularyOptions(license);
         fields.add(license);
 
         PreviewField ownerOrg = this.buildField(FIELD_OWNER_ORG, "Organization", PreviewFieldType.Select, PreviewFieldSource.Mapped, false,
                 () -> this.textValue(FIELD_OWNER_ORG, dataset.getOwnerOrg()));
-        ownerOrg.setVocabSearch(true);
+        this.applyVocabularyOptions(ownerOrg);
         fields.add(ownerOrg);
 
         fields.add(this.buildField(FIELD_PRIVATE, "Private dataset", PreviewFieldType.Boolean, PreviewFieldSource.Mapped, false,

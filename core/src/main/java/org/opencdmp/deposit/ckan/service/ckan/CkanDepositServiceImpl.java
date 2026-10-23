@@ -1,5 +1,19 @@
 package org.opencdmp.deposit.ckan.service.ckan;
 
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.util.MultiValueMap;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.http.client.BufferingClientHttpRequestFactory;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpEntity;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+import org.opencdmp.deposit.ckan.validation.CkanErrors;
+import org.opencdmp.deposit.ckan.validation.CkanDatasetValidator;
+import org.opencdmp.deposit.ckan.configuration.preview.PreviewExtraFieldsProperties;
+import gr.cite.tools.exception.MyValidationException;
+import gr.cite.tools.exception.MyApplicationException;
 import gr.cite.tools.logging.LoggerService;
 import gr.cite.tools.logging.MapLogEntry;
 import org.json.JSONObject;
@@ -15,6 +29,7 @@ import org.opencdmp.deposit.ckan.model.DatasetRelationship;
 import org.opencdmp.deposit.ckan.model.builder.CkanBuilder;
 import org.opencdmp.deposit.ckan.model.builder.CkanPreviewMapper;
 import org.opencdmp.deposit.ckan.service.storage.FileStorageService;
+import org.opencdmp.depositbase.repository.DepositAccount;
 import org.opencdmp.depositbase.repository.DepositConfiguration;
 import org.opencdmp.depositbase.repository.DepositPreviewMergeHelper;
 import org.opencdmp.depositbase.repository.DepositPluginSettings;
@@ -26,11 +41,7 @@ import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.http.*;
-import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.HttpClientErrorException;
-import org.springframework.web.client.HttpServerErrorException;
-import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
@@ -56,16 +67,20 @@ public class CkanDepositServiceImpl implements CkanDepositService {
     private final CkanPreviewMapper ckanPreviewMapper;
     private final FileStorageService storageService;
     private final ResourceLoader resourceLoader;
+    private final CkanDatasetValidator datasetValidator;
+    private final PreviewExtraFieldsProperties previewExtraFieldsProperties;
 
     private byte[] logo;;
     
     @Autowired
-    public CkanDepositServiceImpl(CkanServiceProperties ckanServiceProperties, CkanBuilder mapper, FileStorageService storageService, ResourceLoader resourceLoader, SemanticsProperties semanticsProperties, LocalCustomFieldProperties customFieldProperties, CkanPreviewMapper ckanPreviewMapper){
+    public CkanDepositServiceImpl(CkanServiceProperties ckanServiceProperties, CkanBuilder mapper, FileStorageService storageService, ResourceLoader resourceLoader, SemanticsProperties semanticsProperties, LocalCustomFieldProperties customFieldProperties, CkanPreviewMapper ckanPreviewMapper, CkanDatasetValidator datasetValidator, PreviewExtraFieldsProperties previewExtraFieldsProperties){
         this.ckanServiceProperties = ckanServiceProperties;
         this.ckanBuilder = mapper;
 	    this.storageService = storageService;
         this.resourceLoader = resourceLoader;
         this.ckanPreviewMapper = ckanPreviewMapper;
+        this.datasetValidator = datasetValidator;
+        this.previewExtraFieldsProperties = previewExtraFieldsProperties;
         this.ckanServiceProperties.getDepositConfiguration().setSemantics(CkanSemanticsManifest.build(semanticsProperties, customFieldProperties));
         this.logo = null;
     }
@@ -87,44 +102,7 @@ public class CkanDepositServiceImpl implements CkanDepositService {
 
     @Override
     public List<PreviewFieldOption> searchVocabulary(String fieldCode, String like) {
-        String result = switch (fieldCode) {
-            case CkanPreviewMapper.FIELD_LICENSE -> "license_list";
-            case CkanPreviewMapper.FIELD_OWNER_ORG -> "organization_list";
-            default -> null;
-        };
-        if (result == null) return List.of();
-
-        try {
-            String url = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl() + result;
-            Map<String, Object> response = this.getWebClient().get().uri(url).retrieve().toEntity(Map.class).block().getBody();
-            if (response == null) return List.of();
-
-            List<PreviewFieldOption> options = new ArrayList<>();
-            String term = like != null ? like.trim().toLowerCase(Locale.ROOT) : "";
-            if (CkanPreviewMapper.FIELD_LICENSE.equals(fieldCode)) {
-                List<Map<String, Object>> licenses = (List<Map<String, Object>>) response.get("result");
-                if (licenses == null) return List.of();
-                for (Map<String, Object> license : licenses) {
-                    String id = license.get("id") != null ? license.get("id").toString() : null;
-                    if (id == null || id.isBlank()) continue;
-                    String title = license.get("title") != null ? license.get("title").toString() : id;
-                    if (!term.isEmpty() && !title.toLowerCase(Locale.ROOT).contains(term) && !id.toLowerCase(Locale.ROOT).contains(term)) continue;
-                    options.add(new PreviewFieldOption(title, id));
-                }
-            } else {
-                List<String> organizations = (List<String>) response.get("result");
-                if (organizations == null) return List.of();
-                for (String organization : organizations) {
-                    if (organization == null || organization.isBlank()) continue;
-                    if (!term.isEmpty() && !organization.toLowerCase(Locale.ROOT).contains(term)) continue;
-                    options.add(new PreviewFieldOption(organization, organization));
-                }
-            }
-            return options;
-        } catch (Exception e) {
-            logger.error("vocabulary search failed for " + fieldCode + ": " + e.getMessage(), e);
-            return List.of();
-        }
+        return this.ckanPreviewMapper.searchVocabulary(fieldCode, like);
     }
 
     @Override
@@ -134,16 +112,7 @@ public class CkanDepositServiceImpl implements CkanDepositService {
 
         if(depositConfiguration != null && planDepositModel != null && planDepositModel.getPlanModel() != null) {
 
-            String token = null;
-            if (planDepositModel.getAuthInfo() != null) {
-                if (planDepositModel.getAuthInfo().getAuthToken() != null && !planDepositModel.getAuthInfo().getAuthToken().isBlank()) token = planDepositModel.getAuthInfo().getAuthToken();
-                else if (planDepositModel.getAuthInfo().getAuthFields() != null && !planDepositModel.getAuthInfo().getAuthFields().isEmpty() && depositConfiguration.getUserConfigurationFields() != null) {
-                    PluginUserFieldModel userFieldModel = planDepositModel.getAuthInfo().getAuthFields().stream().filter(x -> x.getCode().equals(CONFIGURATION_FIELD_ACCESS_TOKEN)).findFirst().orElse(null);
-                    if (userFieldModel != null && userFieldModel.getTextValue() != null && !userFieldModel.getTextValue().isBlank()) token = userFieldModel.getTextValue();
-                }
-            }
-
-            if (token == null || token.isBlank()) token = DepositPluginSettings.of(planDepositModel.getPlanModel(), depositConfiguration).text(SETTING_ORGANISATION_ACCESS_TOKEN, this.ckanServiceProperties.getDepositConfiguration().getAccessToken());
+            String token = this.ckanToken(planDepositModel, depositConfiguration);
             String previousDOI = planDepositModel.getPlanModel().getPreviousDOI();
 
             try {
@@ -154,14 +123,10 @@ public class CkanDepositServiceImpl implements CkanDepositService {
                     return depositNewVersion(planDepositModel, token);
                 }
 
-            } catch (HttpClientErrorException | HttpServerErrorException ex) {
-                logger.error(ex.getMessage(), ex);
-                Map<String, String> parsedException = objectMapper.readValue(ex.getResponseBodyAsString(), Map.class);
-                try {
-                    throw new IOException(parsedException.get("message"), ex);
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                }
+            } catch (WebClientResponseException ex) {
+                throw this.toException(ex, ex.getStatusCode().is4xxClientError(), ex.getResponseBodyAsString(), ex.getStatusText(), null);
+            } catch (HttpStatusCodeException ex) {
+                throw this.toException(ex, ex.getStatusCode().is4xxClientError(), ex.getResponseBodyAsString(), ex.getStatusText(), null);
             }
 
         }
@@ -176,22 +141,81 @@ public class CkanDepositServiceImpl implements CkanDepositService {
         CkanDataset dataset = this.ckanBuilder.build(planModel);
         this.ckanPreviewMapper.applyOverrides(dataset, planDepositModel.getEditedFields(), planDepositModel.getEditedGroups(), DepositPluginSettings.of(planDepositModel, this.getConfiguration()));
 
-        String url = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl() + "package_create";
-
-        Map<String, Object> response = this.getWebClient().post().uri(url).headers(httpHeaders -> {
-                    httpHeaders.set("Authorization", token);
-                    httpHeaders.setContentType(MediaType.APPLICATION_JSON);
-                })
-                .bodyValue(dataset).exchangeToMono(mono ->
-                        mono.statusCode().isError() ?
-                                mono.createException().flatMap(Mono::error) :
-                                mono.bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})).block();
-
-        response = (Map<String, Object>) response.get("result");
+        Map<String, Object> response = this.createDataset(dataset, token);
         String id = String.valueOf(response.get("id"));
-        this.uploadFiles(planModel, id, token);
+        try {
+            this.uploadFiles(planModel, id, token);
+        } catch (RuntimeException ex) {
+            this.deleteDataset(id, token);
+            throw ex;
+        }
         this.sendRelationshipFromSemantics(planModel, id, token);
         return String.valueOf(response.get("name"));
+    }
+
+    /** Checks the dataset against CKAN's core schema, then creates it; a refusal is reported with the review's labels. */
+    private Map<String, Object> createDataset(CkanDataset dataset, String token) {
+        Map<String, List<String>> problems = this.datasetValidator.validate(dataset);
+        if (!problems.isEmpty()) throw CkanErrors.exception(CkanErrors.INVALID_VALUES, problems);
+
+        String url = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl() + "package_create";
+        Map<String, Object> response;
+        try {
+            response = this.getWebClient().post().uri(url).headers(httpHeaders -> {
+                        httpHeaders.set("Authorization", token);
+                        httpHeaders.setContentType(MediaType.APPLICATION_JSON);
+                    })
+                    .bodyValue(dataset).exchangeToMono(mono ->
+                            mono.statusCode().isError() ?
+                                    mono.createException().flatMap(Mono::error) :
+                                    mono.bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})).block();
+        } catch (WebClientResponseException ex) {
+            throw this.toException(ex, ex.getStatusCode().is4xxClientError(), ex.getResponseBodyAsString(), ex.getStatusText(), dataset);
+        }
+        if (response == null || !(response.get("result") instanceof Map<?, ?> result)) throw new MyApplicationException("The repository did not return the created dataset");
+        return (Map<String, Object>) result;
+    }
+
+    /** A dataset whose files could not be added is removed: purged when the account may, otherwise deleted. */
+    private void deleteDataset(String id, String token) {
+        String baseUrl = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl();
+        for (String action : List.of("dataset_purge", "package_delete")) {
+            try {
+                this.getWebClient().post().uri(baseUrl + action).headers(httpHeaders -> {
+                            httpHeaders.set("Authorization", token);
+                            httpHeaders.setContentType(MediaType.APPLICATION_JSON);
+                        })
+                        .bodyValue(Map.of("id", id)).retrieve().toBodilessEntity().block();
+                return;
+            } catch (Exception e) {
+                logger.warn(new MapLogEntry("Could not remove the dataset").And("action", action).And("id", id).And("error", e.getMessage()));
+            }
+        }
+    }
+
+    /** What CKAN answered, as a validation error when it refused the values and otherwise as it said it. */
+    private RuntimeException toException(Exception ex, boolean clientError, String body, String statusText, CkanDataset dataset) {
+        logger.error(ex.getMessage(), ex);
+        JsonNode error = null;
+        try {
+            error = objectMapper.readTree(body).path("error");
+        } catch (Exception ignored) {
+            // not a JSON answer
+        }
+        if (CkanErrors.isValidationError(error)) {
+            List<String> extraKeys = dataset != null && dataset.getExtras() != null ? dataset.getExtras().stream().map(extra -> extra != null ? extra.getKey() : null).toList() : null;
+            Map<String, List<String>> problems = CkanErrors.fromCkan(error, this::customFieldLabel, extraKeys);
+            if (!problems.isEmpty()) return CkanErrors.exception(CkanErrors.INVALID_VALUES, problems);
+        }
+        String message = CkanErrors.message(error);
+        if (message == null || message.isBlank()) message = statusText;
+        if (clientError) return new MyValidationException("The repository refused the deposit: " + message);
+        return new MyApplicationException("The repository could not take the deposit: " + message);
+    }
+
+    private String customFieldLabel(String key) {
+        if (this.previewExtraFieldsProperties.getFields() == null) return null;
+        return this.previewExtraFieldsProperties.getFields().stream().filter(field -> field != null && key.equals(field.getKey())).map(PreviewExtraFieldsProperties.ExtraField::getLabel).findFirst().orElse(null);
     }
 
     private void uploadFiles(PlanModel planModel, String id, String token) {
@@ -214,30 +238,22 @@ public class CkanDepositServiceImpl implements CkanDepositService {
 
         String url = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl() + "resource_create";
 
-        MultipartBodyBuilder builder = new MultipartBodyBuilder();
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", token);
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("package_id", datasetId);
+        body.add("name", fileEnvelopeModel.getFilename());
+        body.add("upload", new ByteArrayResource(fileBytes) {
+            @Override
+            public String getFilename() {
+                return fileEnvelopeModel.getFilename();
+            }
+        });
 
-        builder.part("package_id", datasetId);
-        builder.part("name", fileEnvelopeModel.getFilename());
-
-        builder.part(
-                "upload",
-                new ByteArrayResource(fileBytes) {
-                    @Override
-                    public String getFilename() {
-                        return fileEnvelopeModel.getFilename();
-                    }
-                }
-        );
-
-        this.getWebClient().post().uri(url).headers(httpHeaders -> {
-                    httpHeaders.set("Authorization", token);
-                    httpHeaders.setContentType(MediaType.APPLICATION_JSON);
-                })
-                .contentType(MediaType.MULTIPART_FORM_DATA)
-                .body(BodyInserters.fromMultipartData(builder.build()))
-                .retrieve()
-                .bodyToMono(String.class)
-                .block();
+        // CKAN served by werkzeug does not read a chunked body, so the form is sent whole, with its length
+        RestTemplate restTemplate = new RestTemplate(new BufferingClientHttpRequestFactory(new SimpleClientHttpRequestFactory()));
+        restTemplate.postForEntity(url, new HttpEntity<>(body, headers), String.class);
     }
 
     private void sendRelationshipFromSemantics(PlanModel planModel, String datasetId, String token) throws JacksonException {
@@ -271,8 +287,13 @@ public class CkanDepositServiceImpl implements CkanDepositService {
         Map<String, Object> newDataset = this.updateVersion(planDepositModel, oldVersion, token);
 
         if (newDataset != null && newDataset.get("id") != null) {
-            this.uploadFiles(planModel, newDataset.get("id").toString(), token);
-            this.createNewVersionRelationship(oldDatasetId, newDataset.get("id").toString(), token);
+            try {
+                this.uploadFiles(planModel, newDataset.get("id").toString(), token);
+                this.createNewVersionRelationship(oldDatasetId, newDataset.get("id").toString(), token);
+            } catch (RuntimeException ex) {
+                this.deleteDataset(newDataset.get("id").toString(), token);
+                throw ex;
+            }
             this.sendRelationshipFromSemantics(planModel, newDataset.get("id").toString(), token);
             return (String) newDataset.get("name");
         }
@@ -301,18 +322,7 @@ public class CkanDepositServiceImpl implements CkanDepositService {
         // the version is system-managed for new-version deposits (auto-incremented), never user-editable here
         dataset.setVersion(this.nextVersion(version, planModel));
 
-        String url = this.ckanServiceProperties.getDepositConfiguration().getRepositoryUrl() + "package_create";
-
-        Map<String, Object> response = this.getWebClient().post().uri(url).headers(httpHeaders -> {
-                    httpHeaders.set("Authorization", token);
-                    httpHeaders.setContentType(MediaType.APPLICATION_JSON);
-                })
-                .bodyValue(dataset).exchangeToMono(mono ->
-                        mono.statusCode().isError() ?
-                                mono.createException().flatMap(Mono::error) :
-                                mono.bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})).block();
-        if (response == null) return null;
-        return (Map<String, Object>) response.get("result");
+        return this.createDataset(dataset, token);
     }
 
     private String nextVersion(String version, PlanModel planModel) {
@@ -350,7 +360,53 @@ public class CkanDepositServiceImpl implements CkanDepositService {
     public DepositConfiguration getConfiguration() {
         return this.ckanServiceProperties.getDepositConfiguration();
     }
-    
+
+    private String ckanToken(PlanDepositModel planDepositModel, DepositConfiguration depositConfiguration) {
+        String token = null;
+        if (planDepositModel.getAuthInfo() != null) {
+            if (planDepositModel.getAuthInfo().getAuthToken() != null && !planDepositModel.getAuthInfo().getAuthToken().isBlank()) token = planDepositModel.getAuthInfo().getAuthToken();
+            else if (planDepositModel.getAuthInfo().getAuthFields() != null && !planDepositModel.getAuthInfo().getAuthFields().isEmpty() && depositConfiguration.getUserConfigurationFields() != null) {
+                PluginUserFieldModel userFieldModel = planDepositModel.getAuthInfo().getAuthFields().stream().filter(x -> x.getCode().equals(CONFIGURATION_FIELD_ACCESS_TOKEN)).findFirst().orElse(null);
+                if (userFieldModel != null && userFieldModel.getTextValue() != null && !userFieldModel.getTextValue().isBlank()) token = userFieldModel.getTextValue();
+            }
+        }
+
+        if (token == null || token.isBlank()) token = DepositPluginSettings.of(planDepositModel.getPlanModel(), depositConfiguration).text(SETTING_ORGANISATION_ACCESS_TOKEN, this.ckanServiceProperties.getDepositConfiguration().getAccessToken());
+        return token;
+    }
+
+    @Override
+    public DepositAccount account(PlanDepositModel planDepositModel) {
+        DepositConfiguration depositConfiguration = this.getConfiguration();
+        if (depositConfiguration == null || planDepositModel == null || planDepositModel.getPlanModel() == null) return null;
+
+        String token = this.ckanToken(planDepositModel, depositConfiguration);
+        if (token == null || token.isBlank()) return null;
+
+        try {
+            // user_show without an id returns the token's own user (CKAN 2.10+); the token goes in the header because the request logger prints URLs
+            Map<String, Object> response = this.getWebClient().get().uri(depositConfiguration.getRepositoryUrl() + "user_show").headers(httpHeaders -> {
+                httpHeaders.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
+                httpHeaders.set("Authorization", token);
+            }).exchangeToMono(mono -> mono.statusCode().isError() ? mono.createException().flatMap(Mono::error) : mono.bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})).block();
+            if (response == null || !(response.get("result") instanceof Map<?, ?> user) || user.get("id") == null) return null;
+
+            String fullName = user.get("fullname") instanceof String value && !value.isBlank() ? value : null;
+            String username = user.get("name") instanceof String value && !value.isBlank() ? value : null;
+            String email = user.get("email") instanceof String value && !value.isBlank() ? value : null;
+            String name = fullName != null ? fullName : username != null ? username : email;
+            if (name != null && email != null && !name.equals(email)) name = name + " (" + email + ")";
+
+            DepositAccount account = new DepositAccount();
+            account.setId(user.get("id").toString());
+            account.setName(name);
+            return account;
+        } catch (Exception ex) {
+            logger.error("could not read the CKAN account of the deposit", ex);
+            return null;
+        }
+    }
+
     @Override
     public String authenticate(String code){
         return null;
@@ -397,10 +453,11 @@ public class CkanDepositServiceImpl implements CkanDepositService {
     private static ExchangeFilterFunction logResponse() {
         return ExchangeFilterFunction.ofResponseProcessor(response -> {
             if (response.statusCode().isError()) {
-                return response.mutate().build().bodyToMono(String.class)
-                    .flatMap(body -> {
+                // reading the body consumes it, so the response passed on gets it back for the caller to read CKAN's error
+                return response.bodyToMono(String.class).defaultIfEmpty("")
+                    .map(body -> {
                         logger.error(new MapLogEntry("Response").And("method", response.request().getMethod().toString()).And("url", response.request().getURI()).And("status", response.statusCode().toString()).And("body", body));
-                        return Mono.just(response);
+                        return response.mutate().body(body).build();
                     });
             }
             return Mono.just(response);
