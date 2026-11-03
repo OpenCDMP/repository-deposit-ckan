@@ -22,7 +22,8 @@ import java.util.Set;
  * <p>
  * Every value is "can use": the title, name, notes, author and maintainer always come from the plan and the owner
  * organization falls back to the configured one, so nothing a template or blueprint leaves out breaks a deposit. Keys
- * are read from blueprint and template inputs alike; a reference input gives its reference's code.
+ * are read from blueprint and template inputs alike; a reference input gives its reference's code, or, when the key
+ * comes only through its reference type, the id, name, description or field the type gives the key to.
  */
 public final class CkanSemanticsManifest {
 
@@ -101,6 +102,8 @@ public final class CkanSemanticsManifest {
         usage.setFormat(format);
         usage.setMultiple(multiple);
         usage.setFallback(fallback);
+        // every key is read through the generic lookup, which also reads the reference type of a reference input
+        usage.setFromReferenceFields(true);
         return usage;
     }
 

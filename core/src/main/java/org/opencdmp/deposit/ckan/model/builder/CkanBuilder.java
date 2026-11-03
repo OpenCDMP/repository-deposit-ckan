@@ -7,6 +7,7 @@ import org.apache.commons.logging.LogFactory;
 import org.opencdmp.commonmodels.enums.PlanAccessType;
 import org.opencdmp.commonmodels.models.description.*;
 import org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.fielddata.RadioBoxDataModel;
+import org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.fielddata.ReferenceTypeDataModel;
 import org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.fielddata.SelectDataModel;
 import org.opencdmp.commonmodels.models.plan.PlanContactModel;
 import org.opencdmp.commonmodels.models.plan.PlanModel;
@@ -14,7 +15,11 @@ import org.opencdmp.commonmodels.models.plandescriptionfields.FieldModel;
 import org.opencdmp.commonmodels.models.plandescriptionfields.PropertyDefinitionFieldSetItemModel;
 import org.opencdmp.commonmodels.models.plandescriptionfields.PropertyDefinitionFieldSetModel;
 import org.opencdmp.commonmodels.models.planreference.PlanReferenceModel;
+import org.opencdmp.commonmodels.models.reference.ReferenceFieldModel;
 import org.opencdmp.commonmodels.models.reference.ReferenceModel;
+import org.opencdmp.commonmodels.models.referencetype.ReferenceTypeDefinitionModel;
+import org.opencdmp.commonmodels.models.referencetype.ReferenceTypeFieldModel;
+import org.opencdmp.commonmodels.models.referencetype.ReferenceTypeModel;
 import org.opencdmp.deposit.ckan.configuration.SemanticsProperties;
 import org.opencdmp.deposit.ckan.model.CkanDataset;
 import org.opencdmp.deposit.ckan.model.CkanExtra;
@@ -135,14 +140,14 @@ public class CkanBuilder {
     private void buildDatasetRelationshipBySemantics(PlanModel planModel, List<DatasetRelationship> relationships, String semantic, String datasetId, boolean isRelationshipAsObject) {
         //plan blueprint semantics
         List<org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel> fieldsWithSemantics = this.findSchematicValues(semantic, planModel.getPlanBlueprint().getDefinition().getAllField());
-        Set<String> values = extractSchematicValues(fieldsWithSemantics, planModel.getProperties().getFieldSets());
+        Set<String> values = extractSchematicValues(fieldsWithSemantics, planModel.getProperties().getFieldSets(), semantic);
         this.buildRelationships(values, relationships, semantic, datasetId, isRelationshipAsObject);
 
         //description template semantics
         if (planModel.getDescriptions() == null) return;
         for (DescriptionModel descriptionModel: planModel.getDescriptions()) {
             fieldsWithSemantics = this.findSchematicValues(semantic, descriptionModel.getDescriptionTemplate().getDefinition().getAllField());
-            values = extractSchematicValues(fieldsWithSemantics, descriptionModel.getProperties().getFieldSets());
+            values = extractSchematicValues(fieldsWithSemantics, descriptionModel.getProperties().getFieldSets(), semantic);
             this.buildRelationships(values, relationships, semantic, datasetId, isRelationshipAsObject);
         }
     }
@@ -269,7 +274,7 @@ public class CkanBuilder {
 
         //plan blueprint semantics
         List<org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel> fieldsWithSemantics = this.findSchematicValues(SEMANTIC_DATASET_TAGS, planModel.getPlanBlueprint().getDefinition().getAllField());
-        Set<String> values = extractSchematicValues(fieldsWithSemantics, planModel.getProperties().getFieldSets());
+        Set<String> values = extractSchematicValues(fieldsWithSemantics, planModel.getProperties().getFieldSets(), SEMANTIC_DATASET_TAGS);
         //description tags from semantic
         for (String value: values){
             CkanTag tag = new CkanTag();
@@ -280,7 +285,7 @@ public class CkanBuilder {
         //description template
         for (DescriptionModel descriptionModel: planModel.getDescriptions() != null ? planModel.getDescriptions() : List.<DescriptionModel>of()) {
             fieldsWithSemantics = this.findSchematicValues(SEMANTIC_DATASET_TAGS, descriptionModel.getDescriptionTemplate().getDefinition().getAllField());
-            values = extractSchematicValues(fieldsWithSemantics, descriptionModel.getProperties().getFieldSets());
+            values = extractSchematicValues(fieldsWithSemantics, descriptionModel.getProperties().getFieldSets(), SEMANTIC_DATASET_TAGS);
             //description tags from semantic
             for (String value: values){
                 CkanTag tag = new CkanTag();
@@ -323,7 +328,7 @@ public class CkanBuilder {
             if (field.getData() == null) continue;
             List<org.opencdmp.commonmodels.models.plandescriptionfields.FieldModel> valueFields = this.findValueFieldsByIds(field.getId(),  planModel.getProperties().getFieldSets());
             for (org.opencdmp.commonmodels.models.plandescriptionfields.FieldModel valueField : valueFields) {
-                String value = this.extractSchematicSingleValue(List.of(field), planModel.getProperties().getFieldSets());
+                String value = this.extractSchematicSingleValue(List.of(field), planModel.getProperties().getFieldSets(), SEMANTIC_DATASET_EXTRAS);
                 if (value != null) extraValues.computeIfAbsent(valueField.getId(), k -> new LinkedHashSet<>()).add(value);
             }
         }
@@ -335,7 +340,7 @@ public class CkanBuilder {
                 if (field.getData() == null) continue;
                 List<org.opencdmp.commonmodels.models.plandescriptionfields.FieldModel> valueFields = this.findValueFieldsByIds(field.getId(),  descriptionModel.getProperties().getFieldSets());
                 for (org.opencdmp.commonmodels.models.plandescriptionfields.FieldModel valueField : valueFields) {
-                    String value = this.extractSchematicSingleValue(List.of(field), descriptionModel.getProperties().getFieldSets());
+                    String value = this.extractSchematicSingleValue(List.of(field), descriptionModel.getProperties().getFieldSets(), SEMANTIC_DATASET_EXTRAS);
                     if (value != null) extraValues.computeIfAbsent(valueField.getId(), k -> new LinkedHashSet<>()).add(value);
                 }
             }
@@ -386,7 +391,7 @@ public class CkanBuilder {
 
         //plan blueprint semantics
         List<org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel> fieldsWithSemantics = this.findSchematicValues(semanticCode, planModel.getPlanBlueprint().getDefinition().getAllField());
-        Set<String> values = extractSchematicValues(fieldsWithSemantics, planModel.getProperties().getFieldSets());
+        Set<String> values = extractSchematicValues(fieldsWithSemantics, planModel.getProperties().getFieldSets(), semanticCode);
 
         if (!values.isEmpty()) {
             fields.addAll(values.stream().toList());
@@ -396,7 +401,7 @@ public class CkanBuilder {
             //description template
             for (DescriptionModel descriptionModel: planModel.getDescriptions()) {
                 fieldsWithSemantics = this.findSchematicValues(semanticCode, descriptionModel.getDescriptionTemplate().getDefinition().getAllField());
-                values = extractSchematicValues(fieldsWithSemantics, descriptionModel.getProperties().getFieldSets());
+                values = extractSchematicValues(fieldsWithSemantics, descriptionModel.getProperties().getFieldSets(), semanticCode);
                 if (!values.isEmpty()) {
                     fields.addAll(values.stream().toList());
                 }
@@ -407,15 +412,54 @@ public class CkanBuilder {
     }
 
     private List<org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel> findSchematicValues(String relatedId, List<org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel> fields){
-        return fields.stream().filter(x-> x.getSemantics() != null && x.getSemantics().contains(relatedId)).toList();
+        List<org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel> found = new ArrayList<>(fields.stream().filter(x-> x.getSemantics() != null && x.getSemantics().contains(relatedId)).toList());
+        // then the reference inputs whose type gives the picked references the key
+        fields.stream().filter(x -> !found.contains(x) && this.carriesThroughType(x, relatedId)).forEach(found::add);
+        return found;
     }
 
-    private String extractSchematicSingleValue(List<org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel> fields, Map<String, PropertyDefinitionFieldSetModel> fieldSets) {
-        Set<String> value = this.extractSchematicValues(fields, fieldSets);
+    /** Does the input's reference type give the key to its references' id, name, description or one of its fields? */
+    private boolean carriesThroughType(org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel field, String key) {
+        if (field == null || !(field.getData() instanceof ReferenceTypeDataModel data) || data.getReferenceType() == null || data.getReferenceType().getDefinition() == null) return false;
+        ReferenceTypeDefinitionModel definition = data.getReferenceType().getDefinition();
+        return contains(definition.getReferenceIdSemantics(), key) || contains(definition.getLabelSemantics(), key) || contains(definition.getDescriptionSemantics(), key)
+                || (definition.getFields() != null && definition.getFields().stream().anyMatch(x -> contains(x.getSemantics(), key)));
+    }
+
+    /**
+     * The value a picked reference gives the key through its type: its id, name or description when the type gives
+     * that system field the key, else the value of the reference's own field carrying it. Null when none does.
+     */
+    private String referenceTypeValue(ReferenceModel reference, ReferenceTypeModel type, String key) {
+        if (reference == null || type == null || type.getDefinition() == null || key == null) return null;
+        ReferenceTypeDefinitionModel definition = type.getDefinition();
+        String value = null;
+        if (contains(definition.getReferenceIdSemantics(), key)) value = reference.getReference();
+        else if (contains(definition.getLabelSemantics(), key)) value = reference.getLabel();
+        else if (contains(definition.getDescriptionSemantics(), key)) value = reference.getDescription();
+        else if (definition.getFields() != null && reference.getDefinition() != null && reference.getDefinition().getFields() != null) {
+            ReferenceTypeFieldModel typeField = definition.getFields().stream().filter(x -> x.getCode() != null && contains(x.getSemantics(), key)).findFirst().orElse(null);
+            if (typeField != null) value = reference.getDefinition().getFields().stream().filter(x -> typeField.getCode().equals(x.getCode())).map(ReferenceFieldModel::getValue).findFirst().orElse(null);
+        }
+        return value != null && !value.isBlank() ? value : null;
+    }
+
+    /** The values the input's picked references give the key through its reference type, one per reference. */
+    private List<String> referenceTypeValues(org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel field, FieldModel valueField, String key) {
+        if (valueField.getReferences() == null || !(field.getData() instanceof ReferenceTypeDataModel data)) return List.of();
+        return valueField.getReferences().stream().map(x -> this.referenceTypeValue(x, data.getReferenceType(), key)).filter(Objects::nonNull).toList();
+    }
+
+    private static boolean contains(List<String> semantics, String key) {
+        return semantics != null && key != null && semantics.contains(key);
+    }
+
+    private String extractSchematicSingleValue(List<org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel> fields, Map<String, PropertyDefinitionFieldSetModel> fieldSets, String semantic) {
+        Set<String> value = this.extractSchematicValues(fields, fieldSets, semantic);
         return !value.isEmpty() ? value.stream().findFirst().orElse(null): null;
     }
 
-    private Set<String> extractSchematicValues(List<org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel> fields, Map<String, PropertyDefinitionFieldSetModel> fieldSets) {
+    private Set<String> extractSchematicValues(List<org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel> fields, Map<String, PropertyDefinitionFieldSetModel> fieldSets, String semantic) {
         Set<String> values = new HashSet<>();
         for (org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel field : fields) {
             if (field.getData() == null) continue;
@@ -469,7 +513,10 @@ public class CkanBuilder {
                         }
                     }
                     case REFERENCE_TYPES -> {
-                        if (valueField.getReferences() != null && !valueField.getReferences().isEmpty()) {
+                        if (field.getSemantics() == null || !field.getSemantics().contains(semantic)) {
+                            // the key comes through the reference type: a reference with only an id and name answers it too
+                            values.addAll(this.referenceTypeValues(field, valueField, semantic));
+                        } else if (valueField.getReferences() != null && !valueField.getReferences().isEmpty()) {
                             for (ReferenceModel referenceModel : valueField.getReferences()) {
                                 if (referenceModel == null
                                         || referenceModel.getType() == null || referenceModel.getType().getCode() == null || referenceModel.getType().getCode().isBlank()
@@ -617,7 +664,7 @@ public class CkanBuilder {
         // plan blueprint semantics
         List<org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel> planFieldsWithSemantics = this.findSchematicValues(semanticCode, planModel.getPlanBlueprint().getDefinition().getAllField());
         if (planFieldsWithSemantics != null && !planFieldsWithSemantics.isEmpty()) {
-            values.addAll(extractSchematicValues(planFieldsWithSemantics, planModel.getProperties().getFieldSets()));
+            values.addAll(extractSchematicValues(planFieldsWithSemantics, planModel.getProperties().getFieldSets(), semanticCode));
         }
 
         // description template semantics
@@ -625,7 +672,7 @@ public class CkanBuilder {
             for (DescriptionModel descriptionModel : planModel.getDescriptions()) {
                 List<org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel> fieldsWithSemantics = this.findSchematicValues(semanticCode, descriptionModel.getDescriptionTemplate().getDefinition().getAllField());
                 if (fieldsWithSemantics != null && !fieldsWithSemantics.isEmpty()) {
-                    values.addAll(extractSchematicValues(fieldsWithSemantics, descriptionModel.getProperties().getFieldSets()));
+                    values.addAll(extractSchematicValues(fieldsWithSemantics, descriptionModel.getProperties().getFieldSets(), semanticCode));
                 }
 
             }
@@ -649,7 +696,7 @@ public class CkanBuilder {
                 if (field.getData() == null) continue;
                 Map<Integer, FieldModel> valueFieldsByOrdinal = this.findValueFieldsByIdsIndexed(field.getId(), descriptionModel.getProperties());
                 for (Map.Entry<Integer, FieldModel> entry : valueFieldsByOrdinal.entrySet()) {
-                    String value = this.extractSingleFieldValue(field, entry.getValue());
+                    String value = this.extractSingleFieldValue(field, entry.getValue(), semanticCode);
                     if (value != null && !valuesByOrdinal.containsKey(entry.getKey())) valuesByOrdinal.put(entry.getKey(), value);
                 }
             }
@@ -658,7 +705,7 @@ public class CkanBuilder {
         return valuesByOrdinal;
     }
 
-    private String extractSingleFieldValue(org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel field, FieldModel valueField) {
+    private String extractSingleFieldValue(org.opencdmp.commonmodels.models.planblueprintdescriptiontemplatefields.FieldModel field, FieldModel valueField, String semantic) {
         return switch (field.getData().getFieldType()) {
             case FREE_TEXT, TEXT_AREA, RICH_TEXT_AREA ->
                     (valueField.getTextValue() != null && !valueField.getTextValue().isBlank()) ? valueField.getTextValue() : null;
@@ -701,6 +748,11 @@ public class CkanBuilder {
                 yield values.isEmpty() ? null : String.join(", ", values);
             }
             case REFERENCE_TYPES -> {
+                if (field.getSemantics() == null || !field.getSemantics().contains(semantic)) {
+                    // the key comes through the reference type
+                    List<String> values = this.referenceTypeValues(field, valueField, semantic);
+                    yield values.isEmpty() ? null : String.join(", ", values);
+                }
                 if (valueField.getReferences() == null || valueField.getReferences().isEmpty()) yield null;
                 List<String> referenceLabels = valueField.getReferences().stream()
                         .filter(referenceModel -> referenceModel != null
